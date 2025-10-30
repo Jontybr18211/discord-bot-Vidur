@@ -127,10 +127,10 @@ class MyBot(discord.Client):
             await message.channel.send("Sorry, I'm not feeling well (model failed to load).")
             return
 
-        # --- NEW COMMAND: !reset ---
+        # !reset ---
         if message.content == "!reset":
             channel_id = message.channel.id
-            clear_history(channel_id) # <-- Use the DB function
+            clear_history(channel_id)
             await message.channel.send("🤖 My memory for this channel has been cleared from the database.")
             return
 
@@ -148,7 +148,7 @@ class MyBot(discord.Client):
 
                 # 3. Send the new message to the chat
                 async with message.channel.typing():
-                    response = await chat.send_message_async(query) 
+                    response = await chat.send_message_async(query)
                     
                     if response.text:
                         # 4. Save the new messages to the database
