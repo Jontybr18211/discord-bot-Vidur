@@ -24,6 +24,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS messages (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   channel_id INTEGER NOT NULL,
+                  author_id INTEGER,
+                  author_name TEXT,
                   role TEXT NOT NULL,
                   content TEXT NOT NULL,
                   timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -32,13 +34,14 @@ def init_db():
       conn.commit()
       conn.close()
 
-def save_message(channel_id, role, content):
+def save_message(channel_id, role, content, author_id=None, author_name=None):
       """Saves a message to the database."""
       try:
             conn = sqlite3.connect('chat_history.db')
             c = conn.cursor()
-            c.execute("INSERT INTO messages (channel_id, role, content) VALUES (?, ?, ?)",
-                        (channel_id, role, content))
+            # Updated INSERT query with new columns
+            c.execute("INSERT INTO messages (channel_id, author_id, author_name, role, content) VALUES (?, ?, ?, ?, ?)",
+                        (channel_id, author_id, author_name, role, content))
             conn.commit()
             conn.close()
       except Exception as e:
@@ -152,8 +155,16 @@ class MyBot(discord.Client):
                     
                     if response.text:
                         # 4. Save the new messages to the database
-                        save_message(channel_id, "user", query)
-                        save_message(channel_id, "model", response.text)
+                        
+                        # Save the user's message with their name and ID
+                        save_message(channel_id, "user", query,
+                                     author_id=message.author.id,
+                                     author_name=message.author.name)
+                        
+                        # Save the bot's response
+                        save_message(channel_id, "model", response.text,
+                                     author_id=self.user.id,
+                                     author_name=self.user.name)
                         
                         # 5. Send the response to Discord
                         await send_message_in_chunks(message.channel, response.text)
