@@ -3,11 +3,15 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import google.generativeai as genai
-import sqlite3
+import asyncpg
+
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 
 try:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -16,64 +20,56 @@ except Exception as e:
     exit()
 
 
-def init_db():
-    """Initializes the database and creates the messages table if it doesn't exist."""
-    conn = sqlite3.connect('chat_history.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_id INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
 
-def save_message(channel_id, role, content):
+async def init_db(pool):
+    """Initializes the database and creates the messages table if it doesn't exist."""
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                channel_id BIGINT NOT NULL,
+                author_id BIGINT,
+                author_name TEXT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+    print("Database schema initialized.")
+
+async def save_message(pool, channel_id, role, content, author_id=None, author_name=None):
     """Saves a message to the database."""
     try:
-        conn = sqlite3.connect('chat_history.db')
-        c = conn.cursor()
-        c.execute("INSERT INTO messages (channel_id, role, content) VALUES (?, ?, ?)",
-                (channel_id, role, content))
-        conn.commit()
-        conn.close()
+        async with pool.acquire() as conn:
+            # Postgres uses $1, $2, etc. for placeholders, not ?
+            await conn.execute("INSERT INTO messages (channel_id, author_id, author_name, role, content) VALUES ($1, $2, $3, $4, $5)",
+                               (channel_id, author_id, author_name, role, content))
     except Exception as e:
         print(f"Failed to save message to DB: {e}")
 
-def get_history(channel_id):
+async def get_history(pool, channel_id):
     """Retrieves the chat history for a channel, formatted for the Gemini API."""
     try:
-        conn = sqlite3.connect('chat_history.db')
-        c = conn.cursor()
-        # Get the last 20 messages to keep the context window reasonable
-        c.execute("SELECT role, content FROM (SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp DESC LIMIT 20) ORDER BY timestamp ASC",
-                (channel_id,))
-        rows = c.fetchall()
-        conn.close()
-        
-        history = []
-        for row in rows:
-            history.append({"role": row[0], "parts": [row[1]]})
-        return history
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT role, content FROM (SELECT * FROM messages WHERE channel_id = $1 ORDER BY timestamp DESC LIMIT 20) AS sub ORDER BY timestamp ASC",
+                                    (channel_id,))
+            
+            # Format for the genai.start_chat(history=...) method
+            history = []
+            for row in rows:
+                history.append({"role": row['role'], "parts": [row['content']]})
+            return history
     except Exception as e:
         print(f"Failed to get history from DB: {e}")
         return []
 
-def clear_history(channel_id):
+async def clear_history(pool, channel_id):
     """Deletes all messages for a specific channel."""
     try:
-        conn = sqlite3.connect('chat_history.db')
-        c = conn.cursor()
-        c.execute("DELETE FROM messages WHERE channel_id = ?", (channel_id,))
-        conn.commit()
-        conn.close()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM messages WHERE channel_id = $1", (channel_id,))
     except Exception as e:
         print(f"Failed to clear history from DB: {e}")
-
 
 async def send_message_in_chunks(channel, text, chunk_size=1990):
     """Splits a long message into chunks and sends them."""
@@ -102,21 +98,30 @@ async def send_message_in_chunks(channel, text, chunk_size=1990):
 class MyBot(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.model = None
+        self.pool = None
+        
         try:
-
-            self.model = genai.GenerativeModel("gemini-2.5-pro") 
+            self.model = genai.GenerativeModel("gemini-2.5-pro")
             print("Gemini 2.5 Pro Model loaded successfully.")
         except Exception as e:
             print(f"Error loading model: {e}")
-            self.model = None
         
-        init_db()
-        print("Database initialized.")
-
     async def on_ready(self):
         print(f"Bot logged in as {self.user}")
         if self.model is None:
             print("WARNING: Bot is running but Model failed to load.")
+        
+        try:
+            if DATABASE_URL:
+                self.pool = await asyncpg.create_pool(DATABASE_URL)
+                if self.pool:
+                    print("Database connection pool created.")
+                    await init_db(self.pool)
+            else:
+                print("DATABASE_URL not set. Database features will be disabled.")
+        except Exception as e:
+            print(f"Failed to connect to database: {e}")
 
     async def on_message(self, message):
         if message.author == self.user:
@@ -125,10 +130,17 @@ class MyBot(discord.Client):
         if self.model is None:
             await message.channel.send("Sorry, I'm not feeling well (model failed to load).")
             return
+        
+        # Check if the database is connected
+        if self.pool is None:
+            await message.channel.send("Sorry, I can't remember anything (database is not connected).")
+            return
 
+        # !reset ---
         if message.content == "!reset":
             channel_id = message.channel.id
-            clear_history(channel_id)
+            # All DB calls now use 'await' and pass 'self.pool'
+            await clear_history(self.pool, channel_id)
             await message.channel.send("🤖 My memory for this channel has been cleared from the database.")
             return
 
@@ -138,16 +150,19 @@ class MyBot(discord.Client):
             channel_id = message.channel.id
 
             try:
-                history = get_history(channel_id)
-                
+                history = await get_history(self.pool, channel_id)
                 chat = self.model.start_chat(history=history)
-
                 async with message.channel.typing():
                     response = await chat.send_message_async(query)
                     
                     if response.text:
-                        save_message(channel_id, "user", query)
-                        save_message(channel_id, "model", response.text)
+                        await save_message(self.pool, channel_id, "user", query,
+                                           author_id=message.author.id,
+                                           author_name=message.author.name)
+                        
+                        await save_message(self.pool, channel_id, "model", response.text,
+                                           author_id=self.user.id,
+                                           author_name=self.user.name)
                         await send_message_in_chunks(message.channel, response.text)
                     else:
                         await message.channel.send("I couldn't generate a response for that.")
@@ -155,6 +170,7 @@ class MyBot(discord.Client):
             except Exception as e:
                 print(f"Error during content generation: {e}")
                 await message.channel.send(f"An error occurred: {e}")
+
 
 intents = discord.Intents.default()
 intents.message_content = True
