@@ -132,7 +132,7 @@ class MyBot(discord.Client):
             await message.channel.send("🤖 My memory for this channel has been cleared from the database.")
             return
 
-        # !ask
+        
         if message.content.startswith("!ask "):
             query = message.content[5:]
             channel_id = message.channel.id

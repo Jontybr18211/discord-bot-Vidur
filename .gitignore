@@ -1,0 +1,23 @@
+# Python bytecode
+__pycache__/
+
+# Virtual environment directories
+.venv/
+.env/
+
+# VSCode settings
+.vscode/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+.env
+.venv
+test.py
+discord-vidur-key.json
+chat_history.db
+discord.py
