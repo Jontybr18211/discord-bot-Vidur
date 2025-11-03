@@ -40,7 +40,7 @@ async def send_message_in_chunks(channel, text, chunk_size=1990):
 class MyBot(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
         print("✅ Gemini model loaded successfully.")
 
     async def on_ready(self):
