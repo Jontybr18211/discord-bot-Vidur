@@ -8,7 +8,9 @@
 
 **A smart, responsive Discord bot powered by Google's latest Gemini AI, ready to answer your questions and chat 24/7.**
 
-
+<p align="center">
+  <img src="./vidur-bot-header.png" alt="Vidur Bot Header" width="400"/>
+</p>
 
 -----
 
