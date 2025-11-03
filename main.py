@@ -3,170 +3,77 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import google.generativeai as genai
-import aiosqlite  # <-- Import aiosqlite instead of sqlite3
 
 load_dotenv()
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-try:
-      genai.configure(api_key=GEMINI_API_KEY)
-except Exception as e:
-      print(f"Error configuring Gemini: {e}")
-      exit()
-
-
-async def init_db(): # <-- Now an async function
-      """Initializes the database and creates the messages table if it doesn't exist."""
-      async with aiosqlite.connect('chat_history.db') as conn: # <-- async with
-            c = await conn.cursor()
-            await c.execute('''
-                  CREATE TABLE IF NOT EXISTS messages (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        channel_id INTEGER NOT NULL,
-                        author_id INTEGER,
-                        author_name TEXT,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                  )
-            ''')
-            await conn.commit()
-      print("Database initialized.")
-
-async def save_message(channel_id, role, content, author_id=None, author_name=None): # <-- async
-      """Saves a message to the database."""
-      try:
-            async with aiosqlite.connect('chat_history.db') as conn:
-                  await conn.execute("INSERT INTO messages (channel_id, author_id, author_name, role, content) VALUES (?, ?, ?, ?, ?)",
-                                    (channel_id, author_id, author_name, role, content))
-                  await conn.commit()
-      except Exception as e:
-            print(f"Failed to save message to DB: {e}")
-
-async def get_history(channel_id): # <-- async
-      """Retrieves the chat history for a channel, formatted for the Gemini API."""
-      try:
-            async with aiosqlite.connect('chat_history.db') as conn:
-                  c = await conn.cursor()
-                  await c.execute("SELECT role, content FROM (SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp DESC LIMIT 20) ORDER BY timestamp ASC",
-                                    (channel_id,))
-                  rows = await c.fetchall()
-            
-            history = []
-            for row in rows:
-                  history.append({"role": row[0], "parts": [row[1]]})
-            return history
-      except Exception as e:
-            print(f"Failed to get history from DB: {e}")
-            return []
-
-async def clear_history(channel_id): # <-- async
-      """Deletes all messages for a specific channel."""
-      try:
-            async with aiosqlite.connect('chat_history.db') as conn:
-                  await conn.execute("DELETE FROM messages WHERE channel_id = ?", (channel_id,))
-                  await conn.commit()
-      except Exception as e:
-            print(f"Failed to clear history from DB: {e}")
+# Configure Gemini API
+genai.configure(api_key=GEMINI_API_KEY)
 
 async def send_message_in_chunks(channel, text, chunk_size=1990):
-      """Splits a long message into chunks and sends them."""
-      if len(text) <= chunk_size:
-            await channel.send(text)
-            return
-      # (This function is already perfect)
-      chunks = []
-      current_chunk = ""
-      for line in text.split('\n'):
-            if len(current_chunk) + len(line) + 1 > chunk_size:
-                  chunks.append(current_chunk)
-                  current_chunk = ""
-            if len(line) > chunk_size:
-                  for i in range(0, len(line), chunk_size):
-                        chunks.append(line[i:i + chunk_size])
-            else:
-                  current_chunk += line + "\n"
-      if current_chunk:
-            chunks.append(current_chunk)
-      for chunk in chunks:
-            if chunk.strip():
-                  await channel.send(chunk)
-                  await asyncio.sleep(0.5)
+    if len(text) <= chunk_size:
+        await channel.send(text)
+        return
+
+    chunks = []
+    current = ""
+
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > chunk_size:
+            chunks.append(current)
+            current = ""
+
+        if len(line) > chunk_size:
+            for i in range(0, len(line), chunk_size):
+                chunks.append(line[i:i + chunk_size])
+        else:
+            current += line + "\n"
+
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        await channel.send(chunk)
+        await asyncio.sleep(0.4)  # Prevent Discord spam limit
+
 
 class MyBot(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        try:
-            self.model = genai.GenerativeModel("gemini-2.5-pro") 
-            print("Gemini 2.5 Pro Model loaded successfully.")
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            self.model = None
-        
-        # We removed init_db() from here. It's now async.
-        
-    async def setup_hook(self):
-        """This is the new, correct way to run async setup code."""
-        # This runs *after* the bot connects but *before* on_ready.
-        await init_db()
+        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        print("✅ Gemini model loaded successfully.")
 
     async def on_ready(self):
-        print(f"Bot logged in as {self.user}")
-        if self.model is None:
-            print("WARNING: Bot is running but Model failed to load.")
+        print(f"🤖 Bot logged in as {self.user}")
 
     async def on_message(self, message):
         if message.author == self.user:
             return
-        
-        if self.model is None:
-            await message.channel.send("Sorry, I'm not feeling well (model failed to load).")
-            return
 
-        # !reset ---
-        if message.content == "!reset":
-            channel_id = message.channel.id
-            await clear_history(channel_id) # <-- Must be awaited
-            await message.channel.send("🤖 My memory for this channel has been cleared from the database.")
-            return
-        
         if message.content.startswith("!ask "):
             query = message.content[5:]
-            channel_id = message.channel.id
 
             try:
-                # 1. Get this channel's history from the database
-                history = await get_history(channel_id) # <-- Must be awaited
-                
-                # 2. Start a new chat session
-                chat = self.model.start_chat(history=history)
-
-                # 3. Send the new message to the chat
                 async with message.channel.typing():
-                    response = await chat.send_message_async(query)
-                    
+                    response = await self.model.generate_content_async(query)
+
                     if response.text:
-                        # 4. Save the new messages
-                        await save_message(channel_id, "user", query, # <-- Must be awaited
-                                     author_id=message.author.id,
-                                     author_name=message.author.name)
-                        
-                        await save_message(channel_id, "model", response.text, # <-- Must be awaited
-                                     author_id=self.user.id,
-                                     author_name=self.user.name)
-                        
-                        # 5. Send the response to Discord
                         await send_message_in_chunks(message.channel, response.text)
+
                     else:
-                        await message.channel.send("I couldn't generate a response for that.")
+                        await message.channel.send("❓ Gemini returned no output.")
 
             except Exception as e:
-                print(f"Error during content generation: {e}")
-                await message.channel.send(f"An error occurred: {e}")
+                print(f"Gemini error: {e}")
+                await message.channel.send("⚠️ Error generating response.")
+
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
+intents.messages = True
 
 client = MyBot(intents=intents)
 client.run(DISCORD_TOKEN)
