@@ -33,7 +33,7 @@ Want to try Vidur right now? It's easy\!
 
 Click the link below to invite Vidur to your Discord server. You'll just need to select your server and approve the necessary permissions (like "Send Messages" and "Read Message History").
 
-**[➡️ Click Here to Invite Vidur to Your Server](https://discord.com/oauth2/authorize?client_id=1433309753555157156&permissions=3941734153713728&integration_type=0&scope=bot)**
+[![Add to Discord](https://img.shields.io/badge/Add%20to-Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/oauth2/authorize?client_id=1433309753555157156&permissions=3941734153713728&integration_type=0&scope=bot)
 
 -----
 
